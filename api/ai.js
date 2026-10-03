@@ -6,8 +6,8 @@ import { createHash, timingSafeEqual } from 'crypto';
 
 const TIERS = {
   quick:   process.env.MODEL_QUICK   || 'llama-3.1-8b-instant',
-  default: process.env.MODEL_DEFAULT || 'llama-3.3-70b-versatile',
-  complex: process.env.MODEL_COMPLEX || 'llama-3.3-70b-versatile',
+  default: process.env.MODEL_DEFAULT || 'openai/gpt-oss-20b',
+  complex: process.env.MODEL_COMPLEX || 'openai/gpt-oss-20b',
 };
 const MAX_TOKENS = { quick: 700, default: 4096, complex: 4096 };
 const MAX_CHARS = 90000, MAX_TURNS = 30;

@@ -1,0 +1,7 @@
+{
+  "name": "casebook",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Case-study studio with a serverless AI proxy.",
+  "engines": { "node": ">=20" }
+}

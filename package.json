@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Case-study studio with a serverless AI proxy.",
+  "type": "module",
   "engines": {
     "node": ">=20"
   },

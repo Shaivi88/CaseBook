@@ -1,15 +1,15 @@
 // Serverless proxy: keeps the API key on the server and streams plain text back to the browser.
-// Env: ANTHROPIC_API_KEY (required), ACCESS_CODE (optional), RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MIN,
-//      MODEL_QUICK, MODEL_DEFAULT, MODEL_COMPLEX, UPSTREAM_URL (for testing only).
+// Env: GROQ_API_KEY (required), ACCESS_CODE (optional), RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MIN,
+//      MODEL_QUICK, MODEL_DEFAULT, MODEL_COMPLEX
 const crypto = require('crypto');
+const Groq = require('groq-sdk');
 
 const TIERS = {
-  quick: process.env.MODEL_QUICK || 'claude-haiku-4-5-20251001',
-  default: process.env.MODEL_DEFAULT || 'claude-sonnet-5-5',
-  complex: process.env.MODEL_COMPLEX || 'claude-opus-5-5'
+  quick: process.env.MODEL_QUICK || 'llama-3.1-8b-instant',
+  default: process.env.MODEL_DEFAULT || 'llama-3.3-70b-versatile',
+  complex: process.env.MODEL_COMPLEX || 'llama-3.3-70b-versatile'
 };
 const MAX_TOKENS = { quick: 700, default: 4096, complex: 4096 };
-const UPSTREAM = process.env.UPSTREAM_URL || 'https://api.anthropic.com/v1/messages';
 const MAX_CHARS = 90000, MAX_TURNS = 30;
 const LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX) || 40;
 const WINDOW_MS = (Number(process.env.RATE_LIMIT_WINDOW_MIN) || 10) * 60 * 1000;
@@ -46,7 +46,7 @@ module.exports = async function handler(req, res) {
   const origin = req.headers.origin;
   if (origin) { try { if (new URL(origin).host !== req.headers.host) return fail(res, 403, 'forbidden_origin'); } catch (e) { return fail(res, 403, 'forbidden_origin'); } }
 
-  if (!process.env.ANTHROPIC_API_KEY) return fail(res, 503, 'not_configured');
+  if (!process.env.GROQ_API_KEY) return fail(res, 503, 'not_configured');
   const code = process.env.ACCESS_CODE;
   if (code && !same(req.headers['x-access-code'] || '', code)) return fail(res, 401, 'access_code');
 
@@ -64,22 +64,20 @@ module.exports = async function handler(req, res) {
   const ac = new AbortController();
   res.on('close', () => { if (!res.writableFinished) ac.abort(); });
 
-  let upstream;
-  try {
-    upstream = await fetch(UPSTREAM, {
-      method: 'POST', signal: ac.signal,
-      headers: { 'content-type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: TIERS[tier], max_tokens: MAX_TOKENS[tier], stream: true, messages })
-    });
-  } catch (e) { return fail(res, 502, 'upstream_unreachable'); }
+  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-  if (!upstream.ok) {
-    console.error('upstream status', upstream.status);
-    if (upstream.status === 429) return fail(res, 429, 'rate_limited');
-    if (upstream.status === 413) return fail(res, 413, 'prompt_too_large');
-    if (upstream.status === 401 || upstream.status === 403) return fail(res, 503, 'not_configured');
-    if (upstream.status === 400) return fail(res, 400, 'invalid_request');
-    return fail(res, 502, 'upstream_error');
+  let stream;
+  try {
+    stream = await groq.chat.completions.create(
+      { model: TIERS[tier], max_tokens: MAX_TOKENS[tier], stream: true, messages },
+      { signal: ac.signal }
+    );
+  } catch (e) {
+    if (e.status === 429) return fail(res, 429, 'rate_limited');
+    if (e.status === 413) return fail(res, 413, 'prompt_too_large');
+    if (e.status === 401 || e.status === 403) return fail(res, 503, 'not_configured');
+    if (e.status === 400) return fail(res, 400, 'invalid_request');
+    return fail(res, 502, 'upstream_unreachable');
   }
 
   res.status(200);
@@ -87,19 +85,10 @@ module.exports = async function handler(req, res) {
   res.setHeader('X-Accel-Buffering', 'no');
   if (res.flushHeaders) res.flushHeaders();
 
-  let buf = '';
   try {
-    for await (const chunk of upstream.body) {
-      buf += Buffer.from(chunk).toString('utf8');
-      let i;
-      while ((i = buf.indexOf('\n\n')) >= 0) {
-        const evt = buf.slice(0, i); buf = buf.slice(i + 2);
-        const line = evt.split('\n').find(l => l.startsWith('data:'));
-        if (!line) continue;
-        let j; try { j = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
-        if (j.type === 'content_block_delta' && j.delta && j.delta.type === 'text_delta') res.write(j.delta.text);
-        else if (j.type === 'error') { console.error('upstream stream error'); buf = ''; break; }
-      }
+    for await (const chunk of stream) {
+      const text = chunk.choices[0]?.delta?.content || '';
+      if (text) res.write(text);
     }
   } catch (e) { /* client left or upstream dropped; end quietly */ }
   res.end();
